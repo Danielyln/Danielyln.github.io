@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>投资组合 Demo（JPY→USD 转换 + 绩效指标）</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .num { text-align: right; }
+    input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type=number] { -moz-appearance: textfield; }
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+  <div class="max-w-6xl mx-auto p-6">
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+      <h1 class="text-2xl font-bold mb-1" data-i18n="title">投资组合输入（单位：JPY）</h1>
+      <div class="flex items-center gap-2">
+        <label class="text-sm text-slate-600" for="langSel" data-i18n="lang.label">界面语言</label>
+        <select id="langSel" class="border rounded-lg px-3 py-2 bg-white">
+          <option value="zh">中文</option>
+          <option value="ja">日本語</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+    </div>
+
+    <p class="text-slate-600 mb-6" data-i18n="subtitle">输入持仓（JPY），点击按钮换算成美元。下方展示合计市值（JPY & USD）以及绩效指标面板。</p>
+
+    <!-- 汇率与控制栏 -->
+    <div class="grid md:grid-cols-3 gap-4 items-end mb-6">
+      <div>
+        <label class="block text-sm text-slate-600 mb-1" data-i18n="rate.label">实时 JPY → USD 汇率</label>
+        <div class="flex gap-2">
+          <input id="rate" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2 num" placeholder="自动获取或手动输入" data-ph="rate" />
+          <button id="btnFetch" class="shrink-0 px-3 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700" data-i18n="rate.fetch">获取</button>
+        </div>
+        <div id="rateInfo" class="text-xs text-slate-500 mt-1">—</div>
+      </div>
+      <div>
+        <label class="block text-sm text-slate-600 mb-1" data-i18n="target.label">目标币种</label>
+        <input disabled value="USD" class="w-full border rounded-lg px-3 py-2 bg-slate-100" />
+      </div>
+      <div class="flex gap-2 md:justify-end">
+        <button id="btnAdd" class="px-3 py-2 rounded-lg border border-slate-300 hover:bg-slate-100" data-i18n="btn.addRow">添加一行</button>
+        <button id="btnConvert" class="px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700" data-i18n="btn.convert">换算</button>
+      </div>
+    </div>
+
+    <!-- 表格：当前持仓 -->
+    <div class="overflow-x-auto mb-6">
+      <table class="w-full text-sm bg-white shadow-sm rounded-lg overflow-hidden">
+        <thead class="bg-slate-100">
+          <tr>
+            <th class="p-3 text-left" data-i18n="tbl.code">代码</th>
+            <th class="p-3 text-left" data-i18n="tbl.name">名称</th>
+            <th class="p-3 text-right" data-i18n="tbl.shares">持股数</th>
+            <th class="p-3 text-right" data-i18n="tbl.priceJpy">每股价格 (JPY)</th>
+            <th class="p-3 text-right" data-i18n="tbl.valJpy">持仓市值 (JPY)</th>
+            <th class="p-3 text-right" data-i18n="tbl.valUsd">持仓市值 (USD)</th>
+            <th class="p-3"></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+        <tfoot>
+          <tr class="bg-slate-50 font-semibold">
+            <td class="p-3" colspan="4" data-i18n="tbl.total">合计</td>
+            <td id="sumJpy" class="p-3 text-right">—</td>
+            <td id="sumUsd" class="p-3 text-right">—</td>
+            <td class="p-3"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <!-- 持仓价值窗口 -->
+    <div class="grid md:grid-cols-2 gap-6 mb-10">
+      <div class="p-4 bg-white rounded-lg shadow">
+        <h2 class="text-lg font-semibold mb-2" data-i18n="window.jpy">持仓合计市值 (JPY)</h2>
+        <div id="windowJpy" class="text-xl font-bold text-indigo-700">—</div>
+      </div>
+      <div class="p-4 bg-white rounded-lg shadow">
+        <h2 class="text-lg font-semibold mb-2" data-i18n="window.usd">持仓合计市值 (USD)</h2>
+        <div id="windowUsd" class="text-xl font-bold text-emerald-700">—</div>
+      </div>
+    </div>
+
+    <!-- 买入 / 卖出明细模块（与持仓联动，自动计算卖出盈亏） -->
+    <section class="mb-10">
+      <h2 class="text-xl font-semibold mb-3" data-i18n="tx.title">买入 / 卖出明细</h2>
+      <p class="text-slate-600 text-sm mb-4" data-i18n="tx.note">说明：在这里录入你的买入与卖出流水。系统按<em>加权平均成本法</em>为每条卖出记录自动计算已实现盈亏（JPY & USD），并与上方持仓通过“代码”联动。</p>
+
+      <!-- 买入表 -->
+      <div class="mb-6">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-semibold" data-i18n="buy.title">买入明细（JPY）</h3>
+          <button id="btnAddBuy" class="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100" data-i18n="buy.add">添加买入</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm bg-white shadow-sm rounded-lg overflow-hidden">
+            <thead class="bg-slate-100">
+              <tr>
+                <th class="p-3 text-left" data-i18n="col.date">日期</th>
+                <th class="p-3 text-left" data-i18n="col.code">代码</th>
+                <th class="p-3 text-left" data-i18n="col.name">名称（可选）</th>
+                <th class="p-3 text-right" data-i18n="col.qty">股数</th>
+                <th class="p-3 text-right" data-i18n="col.priceJpy">成交价 (JPY)</th>
+                <th class="p-3 text-right" data-i18n="col.feeJpy">手续费 (JPY)</th>
+                <th class="p-3 text-right" data-i18n="col.amountJpy">成交额 (JPY)</th>
+                <th class="p-3 text-right" data-i18n="col.note">备注</th>
+                <th class="p-3"></th>
+              </tr>
+            </thead>
+            <tbody id="buys"></tbody>
+            <tfoot>
+              <tr class="bg-slate-50 font-semibold">
+                <td class="p-3" colspan="6" data-i18n="buy.total">买入合计</td>
+                <td id="buySumJpy" class="p-3 text-right">—</td>
+                <td class="p-3" colspan="2"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <!-- 卖出表 -->
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-semibold" data-i18n="sell.title">卖出明细（自动计算盈亏）</h3>
+          <button id="btnAddSell" class="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100" data-i18n="sell.add">添加卖出</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm bg-white shadow-sm rounded-lg overflow-hidden">
+            <thead class="bg-slate-100">
+              <tr>
+                <th class="p-3 text-left" data-i18n="col.date">日期</th>
+                <th class="p-3 text-left" data-i18n="col.code">代码</th>
+                <th class="p-3 text-left" data-i18n="col.name">名称（可选）</th>
+                <th class="p-3 text-right" data-i18n="col.qty">股数</th>
+                <th class="p-3 text-right" data-i18n="col.priceJpy">成交价 (JPY)</th>
+                <th class="p-3 text-right" data-i18n="col.feeJpy">手续费 (JPY)</th>
+                <th class="p-3 text-right" data-i18n="col.amountJpy">成交额 (JPY)</th>
+                <th class="p-3 text-right" data-i18n="sell.pnlJpy">已实现盈亏 (JPY)</th>
+                <th class="p-3 text-right" data-i18n="sell.pnlUsd">已实现盈亏 (USD)</th>
+                <th class="p-3 text-right" data-i18n="col.note">备注</th>
+                <th class="p-3"></th>
+              </tr>
+            </thead>
+            <tbody id="sells"></tbody>
+            <tfoot>
+              <tr class="bg-slate-50 font-semibold">
+                <td class="p-3" colspan="6" data-i18n="sell.total">卖出合计</td>
+                <td id="sellSumJpy" class="p-3 text-right">—</td>
+                <td id="sellPnlJpy" class="p-3 text-right">—</td>
+                <td id="sellPnlUsd" class="p-3 text-right">—</td>
+                <td class="p-3" colspan="2"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 绩效指标面板 -->
+    <div class="grid md:grid-cols-2 gap-6">
+      <div class="p-4 bg-white rounded-lg shadow">
+        <h2 class="text-lg font-semibold mb-2" data-i18n="perf.title1">收益 / 风险指标</h2>
+        <ul class="space-y-1 text-sm text-slate-700">
+          <li><span data-i18n="perf.annual">年化收益</span>: <span id="mAnnual">—</span></li>
+          <li><span data-i18n="perf.vol">年化波动</span>: <span id="mVol">—</span></li>
+          <li><span data-i18n="perf.mdd">最大回撤</span>: <span id="mDraw">—</span></li>
+          <li><span data-i18n="perf.recover">回撤恢复时间</span>: <span id="mRecover">—</span></li>
+          <li><span data-i18n="perf.sharpe">夏普比率</span>: <span id="mSharpe">—</span></li>
+          <li><span data-i18n="perf.sortino">Sortino比率</span>: <span id="mSortino">—</span></li>
+          <li><span data-i18n="perf.calmar">Calmar比率</span>: <span id="mCalmar">—</span></li>
+          <li><span data-i18n="perf.ir">信息比率</span>: <span id="mInfo">—</span></li>
+          <li><span data-i18n="perf.under">水下时间占比</span>: <span id="mUnder">—</span></li>
+        </ul>
+      </div>
+      <div class="p-4 bg-white rounded-lg shadow">
+        <h2 class="text-lg font-semibold mb-2" data-i18n="perf.title2">成本 / 效率指标</h2>
+        <ul class="space-y-1 text-sm text-slate-700">
+          <li><span data-i18n="cost.gross">毛收益</span>: <span id="mGross">—</span></li>
+          <li><span data-i18n="cost.cost">总成本 (佣金+滑点)</span>: <span id="mCost">—</span></li>
+          <li><span data-i18n="cost.net">净收益</span>: <span id="mNet">—</span></li>
+          <li><span data-i18n="cost.turn">换手率</span>: <span id="mTurn">—</span></li>
+          <li><span data-i18n="cost.win">胜率</span>: <span id="mWin">—</span></li>
+          <li><span data-i18n="cost.pl">盈亏比</span>: <span id="mPl">—</span></li>
+          <li><span data-i18n="cost.hold">平均持有期</span>: <span id="mHold">—</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="mt-6 text-xs text-slate-500" data-i18n="tip">提示：此 Demo 仅展示前端输入与指标占位符。实际指标需通过后端或回测引擎计算再填入。</div>
+  </div>
+
+  <script>
+    const $ = (s, d=document) => d.querySelector(s);
+    const nfJPY = new Intl.NumberFormat('ja-JP', { style:'currency', currency:'JPY', maximumFractionDigits:0 });
+    const nfUSD = new Intl.NumberFormat('en-US', { style:'currency', currency:'USD', maximumFractionDigits:2 });
+
+    const rowsEl = $('#rows');
+    const sumJpyEl = $('#sumJpy');
+    const sumUsdEl = $('#sumUsd');
+    const rateEl = $('#rate');
+    const rateInfoEl = $('#rateInfo');
+    const windowJpyEl = $('#windowJpy');
+    const windowUsdEl = $('#windowUsd');
+
+    const buysEl = $('#buys');
+    const sellsEl = $('#sells');
+    const buySumJpyEl = $('#buySumJpy');
+    const sellSumJpyEl = $('#sellSumJpy');
+    const sellPnlJpyEl = $('#sellPnlJpy');
+    const sellPnlUsdEl = $('#sellPnlUsd');
+
+    // ===== i18n =====
+    const i18n = {
+      zh: {
+        title: '投资组合输入（单位：JPY）',
+        lang: { label: '界面语言' },
+        subtitle: '输入持仓（JPY），点击按钮换算成美元。下方展示合计市值（JPY & USD）以及绩效指标面板。',
+        rate: { label: '实时 JPY → USD 汇率', fetch: '获取' },
+        target: { label: '目标币种' },
+        btn: { addRow: '添加一行', convert: '换算' },
+        tbl: { code: '代码', name: '名称', shares: '持股数', priceJpy: '每股价格 (JPY)', valJpy: '持仓市值 (JPY)', valUsd: '持仓市值 (USD)', total: '合计' },
+        window: { jpy: '持仓合计市值 (JPY)', usd: '持仓合计市值 (USD)' },
+        tx: { title: '买入 / 卖出明细', note: '说明：在这里录入你的买入与卖出流水。系统按<em>加权平均成本法</em>为每条卖出记录自动计算已实现盈亏（JPY & USD），并与上方持仓通过“代码”联动。' },
+        buy: { title: '买入明细（JPY）', add: '添加买入', total: '买入合计' },
+        sell: { title: '卖出明细（自动计算盈亏）', add: '添加卖出', total: '卖出合计', pnlJpy: '已实现盈亏 (JPY)', pnlUsd: '已实现盈亏 (USD)' },
+        col: { date: '日期', code: '代码', name: '名称（可选）', qty: '股数', priceJpy: '成交价 (JPY)', feeJpy: '手续费 (JPY)', amountJpy: '成交额 (JPY)', note: '备注' },
+        perf: { title1: '收益 / 风险指标', annual: '年化收益', vol: '年化波动', mdd: '最大回撤', recover: '回撤恢复时间', sharpe: '夏普比率', sortino: 'Sortino比率', calmar: 'Calmar比率', ir: '信息比率', under: '水下时间占比', title2: '成本 / 效率指标' },
+        cost: { gross: '毛收益', cost: '总成本 (佣金+滑点)', net: '净收益', turn: '换手率', win: '胜率', pl: '盈亏比', hold: '平均持有期' },
+        tip: '提示：此 Demo 仅展示前端输入与指标占位符。实际指标需通过后端或回测引擎计算再填入。',
+        ph: { rate: '自动获取或手动输入', code: '代码', name: '名称', note: '备注' },
+        btnDelete: '删除',
+        msg: { fetching: '正在获取汇率…', fetched: (r)=>`1 JPY = ${r} USD`, fail: '获取失败，请手动输入或重试' }
+      },
+      ja: {
+        title: 'ポートフォリオ入力（通貨：JPY）',
+        lang: { label: '表示言語' },
+        subtitle: '保有銘柄（JPY）を入力し、ボタンでUSDへ換算します。集計評価額（JPY & USD）とパフォーマンス指標を下部に表示します。',
+        rate: { label: 'リアルタイム JPY → USD レート', fetch: '取得' },
+        target: { label: '対象通貨' },
+        btn: { addRow: '行を追加', convert: '換算' },
+        tbl: { code: 'コード', name: '名称', shares: '株数', priceJpy: '株価 (JPY)', valJpy: '評価額 (JPY)', valUsd: '評価額 (USD)', total: '合計' },
+        window: { jpy: '評価額 合計 (JPY)', usd: '評価額 合計 (USD)' },
+        tx: { title: '売買明細', note: '説明：ここでは買付/売却の取引明細を入力します。<em>加重平均コスト法</em>により各売却行の実現損益（JPY & USD）を自動計算し、上部の保有一覧と「コード」で連動します。' },
+        buy: { title: '買付明細（JPY）', add: '買付を追加', total: '買付合計' },
+        sell: { title: '売却明細（損益自動計算）', add: '売却を追加', total: '売却合計', pnlJpy: '実現損益 (JPY)', pnlUsd: '実現損益 (USD)' },
+        col: { date: '日付', code: 'コード', name: '名称（任意）', qty: '数量', priceJpy: '約定単価 (JPY)', feeJpy: '手数料 (JPY)', amountJpy: '約定金額 (JPY)', note: 'メモ' },
+        perf: { title1: '収益 / リスク指標', annual: '年率リターン', vol: '年率ボラティリティ', mdd: '最大ドローダウン', recover: '回復期間', sharpe: 'シャープ比', sortino: 'ソルティノ比', calmar: 'カルマー比', ir: '情報比率', under: '水面下期間比率', title2: 'コスト / 効率指標' },
+        cost: { gross: 'グロス収益', cost: '総コスト（手数料+スリッページ）', net: 'ネット収益', turn: '回転率', win: '勝率', pl: 'ペイオフ比', hold: '平均保有期間' },
+        tip: '注：このデモはフロント入力とダミー指標の枠のみを示します。実値はバックエンドや検証エンジンで算出して反映してください。',
+        ph: { rate: '自動取得または手入力', code: 'コード', name: '名称', note: 'メモ' },
+        btnDelete: '削除',
+        msg: { fetching: 'レート取得中…', fetched: (r)=>`1 JPY = ${r} USD`, fail: '取得に失敗しました。手入力するか再試行してください' }
+      },
+      en: {
+        title: 'Portfolio Input (Currency: JPY)',
+        lang: { label: 'Interface language' },
+        subtitle: 'Enter your holdings in JPY and convert to USD. Aggregate value (JPY & USD) and performance panels are shown below.',
+        rate: { label: 'Real‑time JPY → USD rate', fetch: 'Fetch' },
+        target: { label: 'Target currency' },
+        btn: { addRow: 'Add Row', convert: 'Convert' },
+        tbl: { code: 'Ticker', name: 'Name', shares: 'Shares', priceJpy: 'Price per share (JPY)', valJpy: 'Position Value (JPY)', valUsd: 'Position Value (USD)', total: 'Total' },
+        window: { jpy: 'Total Position Value (JPY)', usd: 'Total Position Value (USD)' },
+        tx: { title: 'Buy / Sell Details', note: 'Enter your buy and sell transactions here. Using the <em>weighted‑average cost</em> method, realized P&L (JPY & USD) is auto‑computed per sell row and linked to holdings by ticker.' },
+        buy: { title: 'Buy Records (JPY)', add: 'Add Buy', total: 'Buy Total' },
+        sell: { title: 'Sell Records (Auto P&L)', add: 'Add Sell', total: 'Sell Total', pnlJpy: 'Realized P&L (JPY)', pnlUsd: 'Realized P&L (USD)' },
+        col: { date: 'Date', code: 'Ticker', name: 'Name (opt.)', qty: 'Qty', priceJpy: 'Fill Price (JPY)', feeJpy: 'Fee (JPY)', amountJpy: 'Amount (JPY)', note: 'Note' },
+        perf: { title1: 'Return / Risk Metrics', annual: 'Annualized Return', vol: 'Annualized Volatility', mdd: 'Max Drawdown', recover: 'Time to Recover', sharpe: 'Sharpe Ratio', sortino: 'Sortino Ratio', calmar: 'Calmar Ratio', ir: 'Information Ratio', under: 'Time Under Water', title2: 'Cost / Efficiency Metrics' },
+        cost: { gross: 'Gross Return', cost: 'Total Cost (fees+slip)', net: 'Net Return', turn: 'Turnover', win: 'Win Rate', pl: 'Payoff Ratio', hold: 'Avg Holding Period' },
+        tip: 'Note: This demo only shows front‑end inputs and metric placeholders. Actual metrics should come from a backend/backtest engine.',
+        ph: { rate: 'Auto or manual input', code: 'Ticker', name: 'Name', note: 'Note' },
+        btnDelete: 'Delete',
+        msg: { fetching: 'Fetching rate…', fetched: (r)=>`1 JPY = ${r} USD`, fail: 'Failed to fetch. Enter manually or retry.' }
+      }
+    };
+
+    function applyI18n(lang) {
+      const dict = i18n[lang] || i18n.zh;
+      document.documentElement.lang = lang === 'ja' ? 'ja' : (lang === 'en' ? 'en' : 'zh-CN');
+      document.title = dict.title.replace(/（.*?）/, '');
+
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        const parts = key.split('.');
+        let obj = dict;
+        for (const p of parts) obj = obj?.[p];
+        if (typeof obj === 'string') {
+          if (key.endsWith('note')) el.innerHTML = obj; else el.textContent = obj;
+        }
+      });
+
+      document.querySelectorAll('[data-ph]').forEach(el => {
+        const phKey = el.getAttribute('data-ph');
+        const val = dict?.ph?.[phKey];
+        if (val) el.placeholder = val;
+      });
+
+      document.querySelectorAll('.btn-del-i18n').forEach(btn => btn.textContent = dict.btnDelete);
+      document.querySelectorAll('input[placeholder]').forEach(inp => {
+        if (inp.classList.contains('ph-code')) inp.placeholder = dict.ph.code;
+        if (inp.classList.contains('ph-name')) inp.placeholder = dict.ph.name;
+        if (inp.classList.contains('ph-note')) inp.placeholder = dict.ph.note;
+      });
+    }
+
+    // ===== 表格行生成 =====
+    function addRow(data={ ticker:'', name:'', shares:'', priceJpy:'' }) {
+      const tr = document.createElement('tr');
+      tr.className = 'border-b last:border-0';
+      tr.innerHTML = `
+        <td class="p-3"><input class="w-full border rounded px-2 py-1 ph-code" value="${data.ticker||''}" placeholder="代码"/></td>
+        <td class="p-3"><input class="w-full border rounded px-2 py-1 ph-name" value="${data.name||''}" placeholder="名称"/></td>
+        <td class="p-3"><input class="w-full border rounded px-2 py-1 num shares" type="number" step="0.0001" min="0" value="${data.shares||''}"/></td>
+        <td class="p-3"><input class="w-full border rounded px-2 py-1 num price" type="number" step="0.01" min="0" value="${data.priceJpy||''}"/></td>
+        <td class="p-3 num val-jpy">—</td>
+        <td class="p-3 num val-usd">—</td>
+        <td class="p-3 text-right"><button class="text-red-600 hover:underline btn-del-i18n">删除</button></td>
+      `;
+      rowsEl.appendChild(tr);
+      bindRow(tr);
+      recalcAll();
+      tr.querySelector('.btn-del-i18n').textContent = i18n[currentLang].btnDelete;
+    }
+
+    function bindRow(tr){
+      tr.querySelector('button').addEventListener('click', ()=>{ tr.remove(); recalcAll(); });
+      tr.querySelectorAll('input').forEach(inp=> inp.addEventListener('input', recalcAll));
+    }
+
+    function addBuyRow(data={date:'',ticker:'',name:'',qty:'',price:'',fee:'',note:''}){
+      const tr = document.createElement('tr');
+      tr.className='border-b last:border-0';
+      tr.innerHTML=`
+        <td class="p-3"><input type="date" class="w-full border rounded px-2 py-1" value="${data.date||''}"/></td>
+        <td class="p-3"><input class="w-full border rounded px-2 py-1 ticker ph-code" value="${data.ticker||''}" placeholder="代码"/></td>
+        <td class="p-3"><input class="w-full border rounded px-2 py-1 name ph-name" value="${data.name||''}" placeholder="名称"/></td>
+        <td class="p-3"><input type="number" class="w-full border rounded px-2 py-1 num qty" step="0.0001" min="0" value="${data.qty||''}"/></td>
+        <td class="p-3"><input type="number" class="w-full border rounded px-2 py-1 num price" step="0.01" min="0" value="${data.price||''}"/></td>
+        <td class="p-3"><input type="number" class="w-full border rounded px-2 py-1 num fee" step="0.01" min="0" value="${data.fee||''}"/></td>
+        <td class="p-3 num amt">—</td>
+        <td class="p-3"><input class="w-full border rounded px-2 py-1 note ph-note" value="${data.note||''}" placeholder="备注"/></td>
+        <td class="p-3 text-right"><button class="text-red-600 hover:underline btn-del-i18n">删除</button></td>`;
+      buysEl.appendChild(tr);
+      bindBuyRow(tr);
+      recalcAll();
+      tr.querySelector('.btn-del-i18n').textContent = i18n[currentLang].btnDelete;
+    }
+    function bindBuyRow(tr){
+      tr.querySelector('button').addEventListener('click', ()=>{ tr.remove(); recalcAll(); });
+      tr.querySelectorAll('input').forEach(inp=> inp.addEventListener('input', recalcAll));
+    }
+
+    function addSellRow(data={date:'',ticker:'',name:'',qty:'',price:'',fee:'',note:''}){
+      const tr = document.createElement('tr');
+      tr.className='border-b last:border-0';
+      tr.innerHTML=`
+        <td class="p-3"><input type="date" class="w-full border rounded px-2 py-1" value="${data.date||''}"/></td>
+        <td class="p-3"><input class="w-full border rounded px-2 py-1 ticker ph-code" value="${data.ticker||''}" placeholder="代码"/></td>
+        <td class="p-3"><input class="w-full border rounded px-2 py-1 name ph-name" value="${data.name||''}" placeholder="名称"/></td>
+        <td class="p-3"><input type="number" class="w-full border rounded px-2 py-1 num qty" step="0.0001" min="0" value="${data.qty||''}"/></td>
+        <td class="p-3"><input type="number" class="w-full border rounded px-2 py-1 num price" step="0.01" min="0" value="${data.price||''}"/></td>
+        <td class="p-3"><input type="number" class="w-full border rounded px-2 py-1 num fee" step="0.01" min="0" value="${data.fee||''}"/></td>
+        <td class="p-3 num amt">—</td>
+        <td class="p-3 num pnl-jpy">—</td>
+        <td class="p-3 num pnl-usd">—</td>
+        <td class="p-3"><input class="w-full border rounded px-2 py-1 note ph-note" value="${data.note||''}" placeholder="备注"/></td>
+        <td class="p-3 text-right"><button class="text-red-600 hover:underline btn-del-i18n">删除</button></td>`;
+      sellsEl.appendChild(tr);
+      bindSellRow(tr);
+      recalcAll();
+      tr.querySelector('.btn-del-i18n').textContent = i18n[currentLang].btnDelete;
+    }
+    function bindSellRow(tr){
+      tr.querySelector('button').addEventListener('click', ()=>{ tr.remove(); recalcAll(); });
+      tr.querySelectorAll('input').forEach(inp=> inp.addEventListener('input', recalcAll));
+    }
+
+    // ===== 汇率 =====
+    function getRate(){
+      const r = parseFloat(rateEl.value);
+      return Number.isFinite(r)&&r>0 ? r : null;
+    }
+
+    async function fetchRate(){
+      rateInfoEl.textContent = i18n[currentLang].msg.fetching;
+      try{
+        let rate = null;
+        try {
+          const r = await fetch('https://api.exchangerate.host/latest?base=JPY&symbols=USD');
+          if (r.ok) {
+            const j = await r.json();
+            rate = j && j.rates && j.rates.USD;
+          }
+        } catch (_) {}
+        if (!rate) {
+          const r2 = await fetch('https://open.er-api.com/v6/latest/JPY');
+          if (r2.ok) {
+            const j2 = await r2.json();
+            rate = j2 && j2.rates && j2.rates.USD;
+          }
+        }
+        if(rate){
+          rateEl.value = Number(rate).toFixed(6);
+          rateInfoEl.textContent = i18n[currentLang].msg.fetched(Number(rate).toFixed(6));
+          recalcAll();
+        } else {
+          rateInfoEl.textContent = i18n[currentLang].msg.fail;
+        }
+      }catch(e){
+        rateInfoEl.textContent = i18n[currentLang].msg.fail;
+      }
+    }
+
+    // ===== 计算：持仓、买入、卖出盈亏 =====
+    function recalcHoldings(){
+      let sumJPY=0, sumUSD=0;
+      const rate=getRate();
+      rowsEl.querySelectorAll('tr').forEach(tr=>{
+        const shares=parseFloat(tr.querySelector('.shares')?.value);
+        const price=parseFloat(tr.querySelector('.price')?.value);
+        const valJpyEl=tr.querySelector('.val-jpy');
+        const valUsdEl=tr.querySelector('.val-usd');
+        if(Number.isFinite(shares)&&Number.isFinite(price)){
+          const valJPY=shares*price;
+          sumJPY+=valJPY;
+          valJpyEl.textContent=nfJPY.format(valJPY);
+          if(rate){
+            const valUSD=valJPY*rate; // JPY → USD
+            sumUSD+=valUSD;
+            valUsdEl.textContent=nfUSD.format(valUSD);
+          }else{valUsdEl.textContent='—';}
+        }else{
+          valJpyEl.textContent='—';valUsdEl.textContent='—';
+        }
+      });
+      sumJpyEl.textContent=sumJPY?nfJPY.format(sumJPY):'—';
+      sumUsdEl.textContent=sumUSD?nfUSD.format(sumUSD):'—';
+      windowJpyEl.textContent=sumJPY?nfJPY.format(sumJPY):'—';
+      windowUsdEl.textContent=sumUSD?nfUSD.format(sumUSD):'—';
+    }
+
+    function snapshotTxns(tbody){
+      const out=[];
+      tbody.querySelectorAll('tr').forEach(tr=>{
+        const inps = tr.querySelectorAll('input');
+        const [dateEl,tickerEl,nameEl,qtyEl,priceEl,feeEl] = [inps[0],inps[1],inps[2],inps[3],inps[4],inps[5]];
+        out.push({
+          date: dateEl?.value||'',
+          ticker: (tickerEl?.value||'').trim(),
+          name: nameEl?.value||'',
+          qty: parseFloat(qtyEl?.value),
+          price: parseFloat(priceEl?.value),
+          fee: parseFloat(feeEl?.value)||0
+        });
+      });
+      return out;
+    }
+
+    function computeAvgCostAndRealized(){
+      const buys = snapshotTxns(buysEl).filter(x=> x.ticker && Number.isFinite(x.qty) && Number.isFinite(x.price));
+      const sellRows = Array.from(sellsEl.querySelectorAll('tr'));
+
+      const parseD = d => d ? new Date(d).getTime() : 0;
+      buys.sort((a,b)=> parseD(a.date)-parseD(b.date));
+
+      const state = {};
+      for(const b of buys){
+        const code=b.ticker;
+        if(!state[code]) state[code]={remaining:0, avgCost:0, name:b.name||''};
+        const st=state[code];
+        const totalCost = st.avgCost*st.remaining + (b.price*b.qty + (b.fee||0));
+        st.remaining += b.qty;
+        st.avgCost = st.remaining>0 ? totalCost / st.remaining : 0;
+        if(!st.name && b.name) st.name=b.name;
+      }
+
+      const realizedByRow = [];
+      sellRows.forEach((tr, idx)=>{
+        const inps=tr.querySelectorAll('input');
+        const [dateEl,tickerEl,nameEl,qtyEl,priceEl,feeEl] = [inps[0],inps[1],inps[2],inps[3],inps[4],inps[5]];
+        const s = {
+          date: dateEl?.value||'',
+          ticker: (tickerEl?.value||'').trim(),
+          name: nameEl?.value||'',
+          qty: parseFloat(qtyEl?.value),
+          price: parseFloat(priceEl?.value),
+          fee: parseFloat(feeEl?.value)||0
+        };
+        const code=s.ticker;
+        if(!code || !Number.isFinite(s.qty) || !Number.isFinite(s.price)){
+          realizedByRow.push({idx, code, pnlJpy:null, amtJpy:null});
+          return;
+        }
+        if(!state[code]) state[code]={remaining:0, avgCost:0, name:s.name||''};
+        const st=state[code];
+        const amt = s.price * s.qty - (s.fee||0);
+        const pnl = (s.price - st.avgCost) * s.qty - (s.fee||0);
+        st.remaining -= s.qty;
+        realizedByRow.push({idx, code, pnlJpy:pnl, amtJpy:amt});
+      });
+
+      return { perTicker: state, realizedByRow };
+    }
+
+    function updateSellPnL(){
+      const rate = getRate();
+      const { realizedByRow } = computeAvgCostAndRealized();
+      let sumSellAmt = 0, sumPnlJpy = 0, sumPnlUsd = 0;
+
+      const rows = Array.from(sellsEl.querySelectorAll('tr'));
+      rows.forEach((tr, i)=>{
+        const amtCell = tr.querySelector('.amt');
+        const pnlJpyCell = tr.querySelector('.pnl-jpy');
+        const pnlUsdCell = tr.querySelector('.pnl-usd');
+
+        const qty = parseFloat(tr.querySelector('.qty')?.value);
+        const price = parseFloat(tr.querySelector('.price')?.value);
+        const fee = parseFloat(tr.querySelector('.fee')?.value)||0;
+
+        if(Number.isFinite(qty) && Number.isFinite(price)){
+          const amt = price*qty - fee;
+          sumSellAmt += amt;
+          amtCell.textContent = nfJPY.format(amt);
+        } else {
+          amtCell.textContent='—';
+        }
+
+        const info = realizedByRow[i];
+        if(info && Number.isFinite(info.pnlJpy)){
+          sumPnlJpy += info.pnlJpy;
+          pnlJpyCell.textContent = nfJPY.format(info.pnlJpy);
+          if(rate){
+            const usd = info.pnlJpy * rate;
+            sumPnlUsd += usd;
+            pnlUsdCell.textContent = nfUSD.format(usd);
+          } else {
+            pnlUsdCell.textContent = '—';
+          }
+        } else {
+          pnlJpyCell.textContent='—';
+          pnlUsdCell.textContent='—';
+        }
+      });
+
+      sellSumJpyEl.textContent = sumSellAmt ? nfJPY.format(sumSellAmt) : '—';
+      sellPnlJpyEl.textContent = sumPnlJpy ? nfJPY.format(sumPnlJpy) : '—';
+      sellPnlUsdEl.textContent = sumPnlUsd ? nfUSD.format(sumPnlUsd) : '—';
+    }
+
+    function recalcAll(){
+      recalcHoldings();
+
+      let buySum=0;
+      buysEl.querySelectorAll('tr').forEach(tr=>{
+        const qty=parseFloat(tr.querySelector('.qty')?.value);
+        const price=parseFloat(tr.querySelector('.price')?.value);
+        const fee=parseFloat(tr.querySelector('.fee')?.value)||0;
+        const amtCell=tr.querySelector('.amt');
+        if(Number.isFinite(qty)&&Number.isFinite(price)){
+          const amt=qty*price + fee;
+          buySum+=amt;
+          amtCell.textContent=nfJPY.format(amt);
+        } else {
+          amtCell.textContent='—';
+        }
+      });
+      buySumJpyEl.textContent = buySum ? nfJPY.format(buySum) : '—';
+
+      updateSellPnL();
+    }
+
+    // ===== 事件绑定 =====
+    $('#btnAdd').addEventListener('click', ()=>addRow());
+    $('#btnFetch').addEventListener('click', fetchRate);
+    $('#btnConvert').addEventListener('click', async ()=>{ if(!getRate()){ await fetchRate(); } recalcAll(); });
+    $('#btnAddBuy').addEventListener('click', ()=> addBuyRow());
+    $('#btnAddSell').addEventListener('click', ()=> addSellRow());
+
+    // Language switcher
+    let currentLang = 'zh';
+    const langSel = $('#langSel');
+    langSel.addEventListener('change', (e)=>{
+      currentLang = e.target.value;
+      applyI18n(currentLang);
+    });
+
+    // 初始化
+    addRow();
+    applyI18n(currentLang);
+    // 自动尝试获取一次汇率
+    fetchRate();
+  </script>
+</body>
+</html>
